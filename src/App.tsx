@@ -13,11 +13,11 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from '@google/genai';
-import { Color, Position, Move, Problem, DataSet } from './types';
+import { Color, Position, Move, Problem, DataSet, BranchSequence } from './types';
 import {
   Shogi, Piece, PIECE_NAMES, fillGoteHand, attachAnswerImages,
   applyMoveToShogi, cloneShogi, compressImage, getLegalMoves, findBestDefenderMove,
-  formatMovesToJapanese
+  formatMovesToJapanese, isSameMove, matchesMoveHistory
 } from './lib/shogiUtils';
 import { getIDBValue, setIDBValue } from './lib/db';
 import problemsData from './data/problems.json';
@@ -55,7 +55,7 @@ export default function App() {
   const [shogi, setShogi] = useState<any>(null);
   const [selectedSquare, setSelectedSquare] = useState<Position | null>(null);
   const [selectedHandPiece, setSelectedHandPiece] = useState<{ piece: string; color: Color } | null>(null);
-  const [message, setMessage] = useState<string>('あなたの番です。');
+  const [message, setMessage] = useState<string>('あなたの番（1手目）です。');
   const [showCorrectSplash, setShowCorrectSplash] = useState(false);
   const [isGameOver, setIsGameOver] = useState(false);
   const [moveHistory, setMoveHistory] = useState<Move[]>([]);
@@ -104,6 +104,7 @@ export default function App() {
   const [showProgressModal, setShowProgressModal] = useState(false);
   const [showAnswerModal, setShowAnswerModal] = useState(false);
   const [showSolutionModal, setShowSolutionModal] = useState(false);
+  const [branchInputName, setBranchInputName] = useState('');
   const answerFileInputRef = useRef<HTMLInputElement>(null);
   const editAnswerFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1077,7 +1078,7 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
       setShogi(newShogi);
       setSelectedSquare(null);
       setSelectedHandPiece(null);
-      setMessage('あなたの番です。');
+      setMessage('あなたの番（1手目）です。');
       setIsGameOver(false);
       setIsGoteManualEntry(false);
       setMoveHistory([]);
@@ -1289,7 +1290,7 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
 
     if (!isLegal) {
       setMessage('その手は指せません（反則手です）。');
-      setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : 'あなたの番です。'), 1500);
+      setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : `あなたの番（${moveHistory.length + 1}手目）です。`), 1500);
       return;
     }
 
@@ -1303,7 +1304,7 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
       if (oppMoves.length === 0) {
         shogi.initializeFromSFENString(sfenBefore);
         setMessage('打ち歩詰めは禁手です。');
-        setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : 'あなたの番です。'), 2000);
+        setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : `あなたの番（${moveHistory.length + 1}手目）です。`), 2000);
         return;
       }
     }
@@ -1320,8 +1321,9 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
       return;
     }
 
+    const currentSenteHistory = [...moveHistory, move];
     setSfenHistory(prev => [...prev, newSfen]);
-    setMoveHistory(prev => [...prev, move]);
+    setMoveHistory(currentSenteHistory);
     
     const nextShogi = cloneShogi(shogi);
     setShogi(nextShogi);
@@ -1337,9 +1339,9 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
         setSolvedProblems(prev => Array.from(new Set([...prev, currentProblem.id])));
         setSolvedAiMovesMap(prev => {
           const newMap = { ...prev };
-          for (let i = 1; i < moveHistory.length; i += 2) {
+          for (let i = 1; i < currentSenteHistory.length; i += 2) {
             const sfen = sfenHistory[i];
-            if (sfen) newMap[sfen] = [...(newMap[sfen] || []), moveHistory[i]];
+            if (sfen) newMap[sfen] = [...(newMap[sfen] || []), currentSenteHistory[i]];
           }
           return newMap;
         });
@@ -1357,50 +1359,66 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
     if (isGoteManualEntry) {
        setPreferredAiMovesMap(prev => ({ ...prev, [sfenBefore]: move }));
        setIsGoteManualEntry(false);
-       setMessage('あなたの番です。');
+       setMessage(`あなたの番（${currentSenteHistory.length + 1}手目）です。`);
        return;
     }
 
     setMessage('相手が考えています...');
 
-    const isAlreadySolved = solvedProblems.includes(currentProblem?.id);
-    const registeredSolution = isAlreadySolved ? null : currentProblem?.solution;
-    let solutionGoteMove: Move | null = null;
-    const senteIndex = moveHistory.length;
+    const senteIndex = currentSenteHistory.length - 1;
     const goteIndex = senteIndex + 1;
 
-    if (registeredSolution && registeredSolution.length > goteIndex) {
-      const expectedSenteMove = registeredSolution[senteIndex];
-      if (expectedSenteMove) {
-        const isFromMatch = (!expectedSenteMove.from && !move.from) ||
-          (expectedSenteMove.from?.x === move.from?.x && expectedSenteMove.from?.y === move.from?.y);
-        const isToMatch = expectedSenteMove.to.x === move.to.x && expectedSenteMove.to.y === move.to.y;
-        const isPieceMatch = (expectedSenteMove.piece || undefined) === (move.piece || undefined);
-        const isPromoteMatch = Boolean(expectedSenteMove.promote) === Boolean(move.promote);
-
-        if (isFromMatch && isToMatch && isPieceMatch && isPromoteMatch) {
-          solutionGoteMove = registeredSolution[goteIndex];
+    // 1. Check Main Solution
+    const isSolutionMatch = currentProblem?.solution && matchesMoveHistory(currentProblem.solution, currentSenteHistory);
+    
+    // 2. Check Registered Non-Solution Branches
+    let matchingBranch: BranchSequence | null = null;
+    if (!isSolutionMatch && currentProblem?.branches) {
+      for (const b of currentProblem.branches) {
+        if (b.moves && matchesMoveHistory(b.moves, currentSenteHistory)) {
+          matchingBranch = b;
+          break;
         }
+      }
+    }
+
+    let solutionGoteMove: Move | null = null;
+    let isBranchMove = false;
+    let branchName = '';
+    let isBranchEndNonSolution = false;
+
+    if (isSolutionMatch && currentProblem?.solution) {
+      if (goteIndex < currentProblem.solution.length) {
+        solutionGoteMove = currentProblem.solution[goteIndex];
+      }
+    } else if (matchingBranch) {
+      isBranchMove = true;
+      branchName = matchingBranch.name || '変化手順';
+      if (goteIndex < matchingBranch.moves.length) {
+        solutionGoteMove = matchingBranch.moves[goteIndex];
+      } else {
+        isBranchEndNonSolution = true;
       }
     }
     
     setTimeout(() => {
+      if (isBranchEndNonSolution) {
+        setIsGameOver(true);
+        setMessage(`不正解です（詰みません）。登録された変化手順「${branchName}」です。`);
+        return;
+      }
+
       let goteMoveToPlay: Move | null = null;
 
       if (solutionGoteMove) {
         const legalGoteMoves = getLegalMoves(nextShogi, Color.White);
-        const isLegal = legalGoteMoves.some(m =>
-          ((!m.from && !solutionGoteMove!.from) || (m.from?.x === solutionGoteMove!.from?.x && m.from?.y === solutionGoteMove!.from?.y)) &&
-          m.to.x === solutionGoteMove!.to.x && m.to.y === solutionGoteMove!.to.y &&
-          (m.piece || undefined) === (solutionGoteMove!.piece || undefined) &&
-          Boolean(m.promote) === Boolean(solutionGoteMove!.promote)
-        );
+        const isLegal = legalGoteMoves.some(m => isSameMove(m, solutionGoteMove));
         if (isLegal) {
           goteMoveToPlay = solutionGoteMove;
         }
       }
 
-      if (!goteMoveToPlay) {
+      if (!goteMoveToPlay && !isSolutionMatch && !isBranchMove) {
         const defenderRes = findBestDefenderMove(nextShogi, 3, solvedAiMovesMap, preferredAiMovesMap);
         goteMoveToPlay = defenderRes.bestMove;
       }
@@ -1416,55 +1434,147 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
           setIsGameOver(true);
           setMessage('指す手がありません。失敗です。');
         } else {
-          setMessage('あなたの番です。');
+          const nextMoveCount = currentSenteHistory.length + 2;
+          if (isBranchMove) {
+            setMessage(`あなたの番（${nextMoveCount}手目）です。（不詰みの手順です）`);
+          } else {
+            setMessage(`あなたの番（${nextMoveCount}手目）です。`);
+          }
         }
         setShogi(cloneShogi(nextShogi));
       } else {
-        setIsGameOver(true);
-        setMessage('CORRECT');
-        setPreferredAiMovesMap({});
-        setSolvedProblems(prev => Array.from(new Set([...prev, currentProblem.id])));
-        setSolvedAiMovesMap(prev => {
-          const newMap = { ...prev };
-          const fullHistory = [...moveHistory, move];
-          for (let i = 1; i < fullHistory.length; i += 2) {
-            const sfen = sfenHistory[i];
-            if (sfen) newMap[sfen] = [...(newMap[sfen] || []), fullHistory[i]];
-          }
-          return newMap;
-        });
-        setShowCorrectSplash(true);
-        setTimeout(() => setShowCorrectSplash(false), 1000);
-        confetti({
-          particleCount: 150,
-          spread: 70,
-          origin: { y: 0.6 }
-        });
+        if (isBranchMove) {
+          setIsGameOver(true);
+          setMessage(`不正解です（詰みません）。登録された変化手順「${branchName}」です。`);
+        } else if (isSolutionMatch || !currentProblem?.solution || currentProblem.solution.length === 0) {
+          setIsGameOver(true);
+          setMessage('CORRECT');
+          setPreferredAiMovesMap({});
+          setSolvedProblems(prev => Array.from(new Set([...prev, currentProblem.id])));
+          setSolvedAiMovesMap(prev => {
+            const newMap = { ...prev };
+            for (let i = 1; i < currentSenteHistory.length; i += 2) {
+              const sfen = sfenHistory[i];
+              if (sfen) newMap[sfen] = [...(newMap[sfen] || []), currentSenteHistory[i]];
+            }
+            return newMap;
+          });
+          setShowCorrectSplash(true);
+          setTimeout(() => setShowCorrectSplash(false), 1000);
+          confetti({
+            particleCount: 150,
+            spread: 70,
+            origin: { y: 0.6 }
+          });
+        } else {
+          setIsGameOver(true);
+          setMessage('不正解です。（登録された正解手順と異なります）');
+        }
       }
     }, 50);
   };
 
   const handleRegisterSolutionClick = () => {
-    if (currentProblem?.solution && currentProblem.solution.length > 0) {
-      setShowSolutionModal(true);
-    } else {
-      if (moveHistory.length > 0) {
-        setConfirmDialog({
-          message: `現在の指し手（${moveHistory.length}手）をこの問題の解答手順として登録しますか？`,
-          onConfirm: async () => {
-            const updated = [...problems];
-            updated[currentProblemIndex] = {
-              ...currentProblem,
-              solution: moveHistory
-            };
-            await saveProblemsData(updated);
-            setAlertDialog('解答手順を登録しました。先手が解答に沿った手を指したときは、後手も登録通りに応答します。');
-          }
-        });
-      } else {
-        setAlertDialog('盤面で手を動かしてから「解答登録」を押すと、その手順を解答として登録できます。');
+    setShowSolutionModal(true);
+  };
+
+  const handleSaveMainSolution = async () => {
+    if (moveHistory.length === 0) return;
+    const updated = [...problems];
+    updated[currentProblemIndex] = {
+      ...currentProblem,
+      solution: moveHistory
+    };
+    await saveProblemsData(updated);
+    setAlertDialog('正解手順を更新しました。');
+  };
+
+  const handleDeleteMainSolution = async () => {
+    setConfirmDialog({
+      message: 'この問題の登録済み正解手順を削除しますか？',
+      onConfirm: async () => {
+        const updated = [...problems];
+        const newProb = { ...currentProblem };
+        delete newProb.solution;
+        updated[currentProblemIndex] = newProb;
+        await saveProblemsData(updated);
+        setAlertDialog('正解手順を削除しました。');
       }
+    });
+  };
+
+  const handleAddBranch = async () => {
+    if (moveHistory.length === 0) return;
+    const updated = [...problems];
+    const targetProb = updated[currentProblemIndex];
+    if (!targetProb) return;
+
+    const existingBranches = targetProb.branches || [];
+    const defaultName = branchInputName.trim() || `変化${existingBranches.length + 1}`;
+
+    const newBranch: BranchSequence = {
+      id: Date.now().toString(),
+      name: defaultName,
+      moves: [...moveHistory]
+    };
+
+    updated[currentProblemIndex] = {
+      ...targetProb,
+      branches: [...existingBranches, newBranch]
+    };
+
+    await saveProblemsData(updated);
+    setBranchInputName('');
+    setAlertDialog(`「${defaultName}」（${moveHistory.length}手）を変化・応手手順として追加しました。`);
+  };
+
+  const handleDeleteBranch = async (branchId: string) => {
+    setConfirmDialog({
+      message: 'この変化・応手手順を削除しますか？',
+      onConfirm: async () => {
+        const updated = [...problems];
+        const targetProb = updated[currentProblemIndex];
+        if (!targetProb) return;
+
+        const newBranches = (targetProb.branches || []).filter(b => b.id !== branchId);
+        updated[currentProblemIndex] = {
+          ...targetProb,
+          branches: newBranches
+        };
+        await saveProblemsData(updated);
+      }
+    });
+  };
+
+  const handleLoadMovesOntoBoard = (movesToLoad: Move[], label: string) => {
+    if (!movesToLoad || movesToLoad.length === 0) return;
+    const newShogi = new Shogi();
+    let initialSfen = currentProblem.initialSfen;
+    if (initialSfen.includes(' w ')) initialSfen = initialSfen.replace(' w ', ' b ');
+    
+    try {
+      if (newShogi.initializeFromSFENString) {
+        newShogi.initializeFromSFENString(initialSfen);
+      } else if (newShogi.initializeFromSFEN) {
+        newShogi.initializeFromSFEN(initialSfen);
+      }
+    } catch (e) {}
+
+    const newSfenHistory = [newShogi.toSFENString ? newShogi.toSFENString(1) : ''];
+    const newMoveHistory: Move[] = [];
+
+    for (const m of movesToLoad) {
+      applyMoveToShogi(newShogi, m);
+      newMoveHistory.push(m);
+      newSfenHistory.push(newShogi.toSFENString ? newShogi.toSFENString(1) : '');
     }
+
+    setShogi(newShogi);
+    setMoveHistory(newMoveHistory);
+    setSfenHistory(newSfenHistory);
+    setIsGameOver(false);
+    setMessage(`「${label}」（${movesToLoad.length}手）を盤面に再現しました。`);
+    setShowSolutionModal(false);
   };
 
   const renderBoard = () => {
@@ -2018,6 +2128,25 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
                         </button>
                       </div>
                     )}
+                  </div>
+                  <div className="space-y-2 pt-2 border-t border-stone-200">
+                    <label className="text-xs font-bold text-stone-700 block uppercase tracking-wider">登録済み手順（正解・変化）</label>
+                    <div className="p-3 bg-white border border-stone-300 rounded-xl flex items-center justify-between">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-xs font-bold text-stone-800">
+                          正解手順: {currentProblem.solution && currentProblem.solution.length > 0 ? `${currentProblem.solution.length}手` : '未登録'}
+                        </span>
+                        <span className="text-xs text-stone-600">
+                          変化・応手手順: {currentProblem.branches?.length || 0}件
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setShowSolutionModal(true)}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1"
+                      >
+                        <ListOrdered size={14} /> 手順を管理
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -2763,14 +2892,14 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
         )}
       </AnimatePresence>
 
-      {/* Registered Solution Modal */}
+      {/* Registered Solution & Branches Management Modal */}
       <AnimatePresence>
         {showSolutionModal && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+            className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm"
             onClick={() => setShowSolutionModal(false)}
           >
             <motion.div
@@ -2778,12 +2907,15 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white rounded-2xl p-5 sm:p-6 max-w-md w-full shadow-2xl flex flex-col gap-4 max-h-[85vh] overflow-hidden border border-stone-200"
+              className="bg-white rounded-2xl p-4 sm:p-6 max-w-lg w-full shadow-2xl flex flex-col gap-4 max-h-[90vh] overflow-hidden border border-stone-200"
             >
               <div className="flex justify-between items-center border-b border-stone-200 pb-3">
-                <h3 className="text-base sm:text-lg font-bold text-stone-800 truncate pr-2">
-                  登録済み解答手順（{currentProblem?.title || `問題${currentProblemIndex + 1}`}）
-                </h3>
+                <div className="flex items-center gap-2">
+                  <ListOrdered className="w-5 h-5 text-blue-600" />
+                  <h3 className="text-base sm:text-lg font-bold text-stone-800 truncate">
+                    解答・変化（応手）手順の管理
+                  </h3>
+                </div>
                 <button
                   onClick={() => setShowSolutionModal(false)}
                   className="p-1.5 bg-stone-100 rounded-full text-stone-600 hover:bg-stone-200 transition-colors shrink-0"
@@ -2792,66 +2924,141 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
                 </button>
               </div>
 
-              <div className="overflow-y-auto flex-1 p-2 bg-stone-50 rounded-xl border border-stone-200">
-                {currentProblem?.solution && currentProblem.solution.length > 0 ? (
-                  <div className="flex flex-col gap-2">
-                    {formatMovesToJapanese(currentProblem.solution, currentProblem.initialSfen).map((moveStr, idx) => (
-                      <div key={idx} className="flex items-center gap-3 px-3 py-2 bg-white rounded-lg border border-stone-200 text-sm font-bold text-stone-800 shadow-sm">
-                        <span className="w-12 text-xs text-stone-500 font-mono shrink-0">{idx + 1}手目</span>
-                        <span className="text-sm sm:text-base text-stone-900 font-bold">{moveStr}</span>
+              <div className="overflow-y-auto flex-1 p-2 sm:p-3 bg-stone-50 rounded-xl border border-stone-200 space-y-4">
+                {/* Main Solution Section */}
+                <div className="bg-white p-3 sm:p-4 rounded-xl border border-stone-200 shadow-sm space-y-2">
+                  <div className="flex items-center justify-between border-b border-stone-100 pb-2">
+                    <span className="font-bold text-stone-900 text-sm flex items-center gap-2">
+                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-xs rounded font-bold">正解手順</span>
+                      {currentProblem?.title}
+                    </span>
+                    {currentProblem?.solution && currentProblem.solution.length > 0 && (
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => handleLoadMovesOntoBoard(currentProblem.solution!, '正解手順')}
+                          className="px-2.5 py-1 bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold rounded transition-colors"
+                        >
+                          盤面に再現
+                        </button>
+                        <button
+                          onClick={handleDeleteMainSolution}
+                          className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded transition-colors"
+                        >
+                          削除
+                        </button>
                       </div>
-                    ))}
+                    )}
                   </div>
-                ) : (
-                  <p className="text-stone-500 text-sm text-center py-6">解答手順は登録されていません。</p>
-                )}
+
+                  {currentProblem?.solution && currentProblem.solution.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {formatMovesToJapanese(currentProblem.solution, currentProblem.initialSfen).map((moveStr, idx) => (
+                        <span key={idx} className="px-2 py-1 bg-stone-100 border border-stone-300 rounded text-xs font-bold text-stone-800">
+                          {idx + 1}. {moveStr}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-stone-500 text-xs py-2">正解手順は未登録です。</p>
+                  )}
+
+                  {moveHistory.length > 0 && (
+                    <div className="pt-2 border-t border-stone-100">
+                      <button
+                        onClick={() => {
+                          setConfirmDialog({
+                            message: `現在の指し手（${moveHistory.length}手）を【正解手順】として登録しますか？`,
+                            onConfirm: handleSaveMainSolution
+                          });
+                        }}
+                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm flex items-center justify-center gap-1"
+                      >
+                        <Check size={14} />
+                        現在の指し手（{moveHistory.length}手）を【正解手順】として登録
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Alternative Branches Section */}
+                <div className="bg-white p-3 sm:p-4 rounded-xl border border-stone-200 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between border-b border-stone-100 pb-2">
+                    <span className="font-bold text-stone-900 text-sm flex items-center gap-2">
+                      <span className="px-2 py-0.5 bg-amber-100 text-amber-800 text-xs rounded font-bold">変化・応手手順（不正解）</span>
+                      {currentProblem?.branches?.length || 0}件
+                    </span>
+                  </div>
+
+                  {currentProblem?.branches && currentProblem.branches.length > 0 ? (
+                    <div className="space-y-2">
+                      {currentProblem.branches.map((b, bIdx) => (
+                        <div key={b.id || bIdx} className="p-2.5 bg-amber-50/50 border border-amber-200 rounded-lg flex flex-col gap-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-stone-800 text-xs flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                              {b.name || `変化${bIdx + 1}`} ({b.moves.length}手)
+                            </span>
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => handleLoadMovesOntoBoard(b.moves, b.name || `変化${bIdx + 1}`)}
+                                className="px-2 py-0.5 bg-stone-200 hover:bg-stone-300 text-stone-800 text-[11px] font-bold rounded transition-colors"
+                              >
+                                盤面に再現
+                              </button>
+                              <button
+                                onClick={() => handleDeleteBranch(b.id)}
+                                className="px-2 py-0.5 bg-red-100 hover:bg-red-200 text-red-700 text-[11px] font-bold rounded transition-colors"
+                              >
+                                削除
+                              </button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {formatMovesToJapanese(b.moves, currentProblem.initialSfen).map((mStr, mIdx) => (
+                              <span key={mIdx} className="px-1.5 py-0.5 bg-white border border-stone-300 rounded text-[11px] font-mono text-stone-800">
+                                {mIdx + 1}. {mStr}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-stone-500 text-xs py-2">登録された変化・応手手順はありません。</p>
+                  )}
+
+                  {/* Form to add current move history as branch */}
+                  {moveHistory.length > 0 ? (
+                    <div className="pt-2 border-t border-stone-100 flex flex-col gap-2">
+                      <span className="text-xs font-bold text-stone-700">現在の指し手を変化・応手手順として追加</span>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={branchInputName}
+                          onChange={(e) => setBranchInputName(e.target.value)}
+                          placeholder="手順名（例: 5三金への変化）"
+                          className="flex-1 px-3 py-1.5 text-xs border border-stone-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        />
+                        <button
+                          onClick={handleAddBranch}
+                          className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm whitespace-nowrap flex items-center gap-1"
+                        >
+                          <Plus size={14} /> 追加（{moveHistory.length}手）
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-stone-500 bg-stone-100 p-2 rounded text-center">
+                      ※盤面で駒を動かしてからこの画面を開くと、その手を【正解手順】または【変化・応手手順】として登録できます。
+                    </p>
+                  )}
+                </div>
               </div>
 
-              <div className="flex flex-col gap-2 pt-2 border-t border-stone-200">
-                {moveHistory.length > 0 && (
-                  <button
-                    onClick={() => {
-                      setConfirmDialog({
-                        message: `現在の局面・指し手（${moveHistory.length}手）で解答手順を上書き登録しますか？`,
-                        onConfirm: async () => {
-                          const updated = [...problems];
-                          updated[currentProblemIndex] = {
-                            ...currentProblem,
-                            solution: moveHistory
-                          };
-                          await saveProblemsData(updated);
-                          setShowSolutionModal(false);
-                          setAlertDialog('解答手順を更新しました。');
-                        }
-                      });
-                    }}
-                    className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition-colors shadow-sm"
-                  >
-                    現在の指し手（{moveHistory.length}手）で上書き登録
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    setConfirmDialog({
-                      message: 'この問題の登録済み解答手順を削除しますか？',
-                      onConfirm: async () => {
-                        const updated = [...problems];
-                        const newProb = { ...currentProblem };
-                        delete newProb.solution;
-                        updated[currentProblemIndex] = newProb;
-                        await saveProblemsData(updated);
-                        setShowSolutionModal(false);
-                        setAlertDialog('登録手順を削除しました。');
-                      }
-                    });
-                  }}
-                  className="w-full py-2 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-xl text-sm transition-colors border border-red-200"
-                >
-                  解答手順を削除
-                </button>
+              <div className="flex justify-end pt-2 border-t border-stone-200">
                 <button
                   onClick={() => setShowSolutionModal(false)}
-                  className="w-full py-2 bg-stone-200 hover:bg-stone-300 text-stone-800 font-bold rounded-xl text-sm transition-colors"
+                  className="px-6 py-2 bg-stone-800 hover:bg-stone-900 text-white font-bold rounded-xl text-sm transition-colors shadow-sm"
                 >
                   閉じる
                 </button>
