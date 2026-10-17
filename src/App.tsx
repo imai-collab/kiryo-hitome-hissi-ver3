@@ -55,7 +55,7 @@ export default function App() {
   const [shogi, setShogi] = useState<any>(null);
   const [selectedSquare, setSelectedSquare] = useState<Position | null>(null);
   const [selectedHandPiece, setSelectedHandPiece] = useState<{ piece: string; color: Color } | null>(null);
-  const [message, setMessage] = useState<string>('あなたの番（1手目）です。');
+  const [message, setMessage] = useState<string>('あなたの番です。');
   const [showCorrectSplash, setShowCorrectSplash] = useState(false);
   const [isGameOver, setIsGameOver] = useState(false);
   const [moveHistory, setMoveHistory] = useState<Move[]>([]);
@@ -1078,7 +1078,7 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
       setShogi(newShogi);
       setSelectedSquare(null);
       setSelectedHandPiece(null);
-      setMessage('あなたの番（1手目）です。');
+      setMessage('あなたの番です。');
       setIsGameOver(false);
       setIsGoteManualEntry(false);
       setMoveHistory([]);
@@ -1290,7 +1290,7 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
 
     if (!isLegal) {
       setMessage('その手は指せません（反則手です）。');
-      setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : `あなたの番（${moveHistory.length + 1}手目）です。`), 1500);
+      setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : 'あなたの番です。'), 1500);
       return;
     }
 
@@ -1304,7 +1304,7 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
       if (oppMoves.length === 0) {
         shogi.initializeFromSFENString(sfenBefore);
         setMessage('打ち歩詰めは禁手です。');
-        setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : `あなたの番（${moveHistory.length + 1}手目）です。`), 2000);
+        setTimeout(() => setMessage(isGoteManualEntry ? '後手の手を入力してください。' : 'あなたの番です。'), 2000);
         return;
       }
     }
@@ -1359,7 +1359,7 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
     if (isGoteManualEntry) {
        setPreferredAiMovesMap(prev => ({ ...prev, [sfenBefore]: move }));
        setIsGoteManualEntry(false);
-       setMessage(`あなたの番（${currentSenteHistory.length + 1}手目）です。`);
+       setMessage('あなたの番です。');
        return;
     }
 
@@ -1434,11 +1434,10 @@ SFEN形式の例: 7nl/1R3sk2/5pppp/9/9/9/9/9/9 b GS 1
           setIsGameOver(true);
           setMessage('指す手がありません。失敗です。');
         } else {
-          const nextMoveCount = currentSenteHistory.length + 2;
           if (isBranchMove) {
-            setMessage(`あなたの番（${nextMoveCount}手目）です。（不詰みの手順です）`);
+            setMessage('あなたの番です。（不詰みの手順です）');
           } else {
-            setMessage(`あなたの番（${nextMoveCount}手目）です。`);
+            setMessage('あなたの番です。');
           }
         }
         setShogi(cloneShogi(nextShogi));
